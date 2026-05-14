@@ -35,8 +35,13 @@ router.get('/', auth, async (req, res) => {
     }
     const where = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
 
+<<<<<<< HEAD
     // KEY FIX: Use a derived table (MySQL 5.5+ compatible) to get ONLY the single
     // highest risk prediction per patient, preventing duplicate rows.
+=======
+    // KEY FIX: Use subquery to get ONLY the single highest risk prediction per patient
+    // This prevents duplicate rows when a patient has multiple disease predictions
+>>>>>>> 1c7ac7ea1cef92ea75aec00ec3261f7e72c055f0
     const query = `
       SELECT
         p.id,
@@ -53,6 +58,7 @@ router.get('/', auth, async (req, res) => {
         d.name AS primary_disease
       FROM patients p
       LEFT JOIN users u ON u.id = p.assigned_doctor
+<<<<<<< HEAD
       LEFT JOIN (
         SELECT ap1.*
         FROM ai_predictions ap1
@@ -62,6 +68,14 @@ router.get('/', auth, async (req, res) => {
           GROUP BY patient_id
         ) ap2 ON ap1.patient_id = ap2.patient_id AND ap1.risk_score = ap2.max_risk
       ) ap ON ap.patient_id = p.id
+=======
+      LEFT JOIN ai_predictions ap ON ap.id = (
+        SELECT id FROM ai_predictions
+        WHERE patient_id = p.id
+        ORDER BY risk_score DESC, predicted_at DESC
+        LIMIT 1
+      )
+>>>>>>> 1c7ac7ea1cef92ea75aec00ec3261f7e72c055f0
       LEFT JOIN diseases d ON d.id = ap.disease_id
       ${where}
       ORDER BY p.id ASC
