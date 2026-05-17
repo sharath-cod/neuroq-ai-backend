@@ -1,4 +1,4 @@
-// routes/patients.js - FIXED: one row per patient, no duplicates
+// routes/patients.js - FIXED: Incorrect arguments to mysqld_stmt_execute
 const router  = require('express').Router();
 const multer  = require('multer');
 const path    = require('path');
@@ -14,12 +14,17 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
 
 // ─────────────────────────────────────────────────────────
-// GET /api/patients — ONE ROW PER PATIENT (fixed)
+// GET /api/patients — ONE ROW PER PATIENT
+// FIX: LIMIT/OFFSET embedded directly in SQL string to avoid
+//      "Incorrect arguments to mysqld_stmt_execute" on Aiven MySQL
 // ─────────────────────────────────────────────────────────
 router.get('/', auth, async (req, res) => {
   try {
-    const { search, status, page = 1, limit = 10 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { search, status } = req.query;
+    // FIX: parse to safe integers and embed in SQL directly (not as bind params)
+    const pageNum   = Math.max(1, parseInt(req.query.page,  10) || 1);
+    const limitNum  = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const offsetNum = (pageNum - 1) * limitNum;
 
     let whereClauses = [];
     let params = [];
@@ -35,8 +40,8 @@ router.get('/', auth, async (req, res) => {
     }
     const where = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
 
-    // KEY FIX: Use subquery to get ONLY the single highest risk prediction per patient
-    // This prevents duplicate rows when a patient has multiple disease predictions
+    // FIX: LIMIT and OFFSET are interpolated as safe integer literals, NOT bind params
+    // This avoids "Incorrect arguments to mysqld_stmt_execute" on Aiven/MySQL 5.x
     const query = `
       SELECT
         p.id,
@@ -65,13 +70,12 @@ router.get('/', auth, async (req, res) => {
       LEFT JOIN diseases d ON d.id = ap.disease_id
       ${where}
       ORDER BY p.id ASC
-      LIMIT ? OFFSET ?
+      LIMIT ${limitNum} OFFSET ${offsetNum}
     `;
 
-    const queryParams = [...params, parseInt(limit), offset];
-    const [patients] = await db.execute(query, queryParams);
+    const [patients] = await db.execute(query, params);
 
-    // Count query (just patients, no joins)
+    // Count query
     const [[{ total }]] = await db.execute(
       `SELECT COUNT(*) AS total FROM patients p ${where}`,
       params
@@ -80,8 +84,8 @@ router.get('/', auth, async (req, res) => {
     res.json({
       patients,
       total,
-      page:  parseInt(page),
-      pages: Math.ceil(total / parseInt(limit))
+      page:  pageNum,
+      pages: Math.ceil(total / limitNum)
     });
 
   } catch (e) {
@@ -119,7 +123,6 @@ router.get('/:id', auth, async (req, res) => {
       'SELECT * FROM visits WHERE patient_id = ? ORDER BY visit_date DESC',
       [req.params.id]
     );
-    // All predictions for this patient — grouped properly
     const [predictions]  = await db.execute(`
       SELECT ap.*,
              d.name AS disease_name,
@@ -192,7 +195,6 @@ router.post('/', auth, doctorOrAdmin,
       );
       const pid = ins.insertId;
 
-      // Insert biomarkers if provided
       if (b.amyloid_beta || b.total_tau || b.hippocampal_vol || b.alpha_synuclein) {
         await conn.execute(`
           INSERT INTO biomarkers
@@ -209,7 +211,6 @@ router.post('/', auth, doctorOrAdmin,
         );
       }
 
-      // Insert genetics
       await conn.execute(`
         INSERT INTO genetic_markers
           (patient_id, apoe4, family_hx, lrrk2, snca, c9orf72, sod1, htt_cag, hla_drb1, tested_on)
@@ -220,7 +221,6 @@ router.post('/', auth, doctorOrAdmin,
          b.htt_cag || 18, b.hla_drb1 ? 1 : 0]
       );
 
-      // Insert comorbidities
       await conn.execute(`
         INSERT INTO comorbidities
           (patient_id, diabetes, hypertension, smoking, depression,
